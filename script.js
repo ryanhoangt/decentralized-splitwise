@@ -10,27 +10,85 @@ var GENESIS =
 
 // This is the ABI for your contract (get it from Remix, in the 'Compile' tab)
 // ============================================================
-var abi = []; // FIXME: fill this in with your contract's ABI //Be sure to only have one array, not two
-
+var abi = [
+  {
+    inputs: [
+      {
+        internalType: "address",
+        name: "creditor",
+        type: "address",
+      },
+      {
+        internalType: "uint32",
+        name: "amount",
+        type: "uint32",
+      },
+      {
+        internalType: "address[]",
+        name: "cre_to_debt_path",
+        type: "address[]",
+      },
+      {
+        internalType: "uint32",
+        name: "min_on_cycle",
+        type: "uint32",
+      },
+    ],
+    name: "add_IOU",
+    outputs: [],
+    stateMutability: "nonpayable",
+    type: "function",
+  },
+  {
+    inputs: [
+      {
+        internalType: "address",
+        name: "debtor",
+        type: "address",
+      },
+      {
+        internalType: "address",
+        name: "creditor",
+        type: "address",
+      },
+    ],
+    name: "lookup",
+    outputs: [
+      {
+        internalType: "uint32",
+        name: "ret",
+        type: "uint32",
+      },
+    ],
+    stateMutability: "view",
+    type: "function",
+  },
+];
 // ============================================================
 abiDecoder.addABI(abi);
 // call abiDecoder.decodeMethod to use this - see 'getAllFunctionCalls' for more
 
-var contractAddress = ""; // FIXME: fill this in with your contract's address/hash
+// var contractAddress = "";
+// var contractAddress = "0xe358FdDc315C629A8F337535Be1EDa86b0470658";
+var contractAddress = "0x3b2d8304570526ea3Cc2Cea54Fca01dA4208eA8F";
 var BlockchainSplitwise = new web3.eth.Contract(abi, contractAddress);
 
 // =============================================================================
 //                            Functions To Implement
 // =============================================================================
 
-// TODO: Add any helper functions here!
+// Helper functions!
+function compareIgnoringCase(str1, str2) {
+  return str1.toUpperCase() === str2.toUpperCase();
+}
+
 async function getCallData(extractor_fn) {
   const res = new Set();
   const all_calls = await getAllFunctionCalls(contractAddress, "add_IOU");
 
   for (var i = 0; i < all_calls.length; i++) {
     const extracted_values = extractor_fn(all_calls[i]); // array of values
-    for (var j = 0; j < extracted_values.length; i++) {
+    for (var j = 0; j < extracted_values.length; j++) {
       res.add(extracted_values[j]);
     }
   }
@@ -39,15 +97,15 @@ async function getCallData(extractor_fn) {
 }
 
 async function getPotentialCreditors() {
-  return getCallData((call) => {
+  const res = await getCallData((call) => {
     return [call.args[0]];
   });
+  return res;
 }
 
 async function getCreditorsForUser(user) {
   var creditors = [];
   const all_creditors = await getPotentialCreditors();
-
   for (var i = 0; i < all_creditors.length; i++) {
     var debtAmt = await BlockchainSplitwise.methods
       .lookup(user, all_creditors[i])
@@ -57,26 +115,39 @@ async function getCreditorsForUser(user) {
       creditors.push(all_creditors[i]);
     }
   }
-
   return creditors;
 }
 
 async function findMinOnPath(path) {
-  // TODO:
+  var minValueOwed = -1;
+  for (var i = 1; i < path.length; i++) {
+    const debtor = path[i - 1];
+    const creditor = path[i];
+    const curAmountOwed = parseInt(
+      await BlockchainSplitwise.methods
+        .lookup(debtor, creditor)
+        .call({ from: web3.eth.defaultAccount })
+    );
+    if (minValueOwed == -1 || minValueOwed > curAmountOwed)
+      minValueOwed = curAmountOwed;
+  }
+
+  return minValueOwed;
 }
 
-// TODO: Return a list of all users (creditors or debtors) in the system
+// Return a list of all users (creditors or debtors) in the system
 // You can return either:
 //   - a list of everyone who has ever sent or received an IOU
 // OR
 //   - a list of everyone currently owing or being owed money
 async function getUsers() {
-  return getCallData((call) => {
+  const res = await getCallData((call) => {
     return [call.from, call.args[0]];
   });
+  return res;
 }
 
-// TODO: Get the total amount owed by the user specified by 'user'
+// Get the total amount owed by the user specified by 'user'
 async function getTotalOwed(user) {
   var res = 0;
   const all_potential_creditors = await getPotentialCreditors();
@@ -84,46 +155,47 @@ async function getTotalOwed(user) {
     var debtAmt = await BlockchainSplitwise.methods
       .lookup(user, all_potential_creditors[i])
       .call({ from: web3.eth.defaultAccount });
-
     res += parseInt(debtAmt, 10);
   }
-
   return res;
 }
 
-// TODO: Get the last time this user has sent or received an IOU, in seconds since Jan. 1, 1970
+// Get the last time this user has sent or received an IOU, in seconds since Jan. 1, 1970
 // Return null if you can't find any activity for the user.
 // HINT: Try looking at the way 'getAllFunctionCalls' is written. You can modify it if you'd like.
 async function getLastActive(user) {
   const all_timestamps = await getCallData((call) => {
-    if (call.from === user || call.args[0] === user) {
+    if (
+      compareIgnoringCase(call.from, user) ||
+      compareIgnoringCase(call.args[0], user)
+    ) {
       return [call.t];
     }
-
     return [];
   });
-
-  return Math.max(all_timestamps);
+  if (all_timestamps.length === 0) return null;
+  return Math.max(...all_timestamps);
 }
 
-// TODO: add an IOU ('I owe you') to the system
+// Add an IOU ('I owe you') to the system
 // The person you owe money is passed as 'creditor'
 // The amount you owe them is passed as 'amount'
 async function add_IOU(creditor, amount) {
   const debtor = web3.eth.defaultAccount;
 
-  const path = doBFS(creditor, debtor, getCreditorsForUser);
+  // iou path from creditor to debtor
+  const path = await doBFS(creditor, debtor, getCreditorsForUser);
   if (path != null) {
     const min_on_path = await findMinOnPath(path);
     const min_on_cycle = Math.min(min_on_path, amount);
-    return BlockchainSplitwise.methods
+    return await BlockchainSplitwise.methods
       .add_IOU(creditor, amount, path, min_on_cycle)
-      .send({ from: web3.eth.defaultAccount }); // TODO: specify gas limit and gas price
+      .send({ from: web3.eth.defaultAccount });
   }
 
-  return BlockchainSplitwise.methods
+  return await BlockchainSplitwise.methods
     .add_IOU(creditor, amount, [], 0)
-    .send({ from: web3.eth.defaultAccount }); // TODO: specify gas limit and gas price
+    .send({ from: web3.eth.defaultAccount });
 }
 
 // =============================================================================
@@ -177,7 +249,7 @@ async function doBFS(start, end, getNeighbors) {
   while (queue.length > 0) {
     var cur = queue.shift();
     var lastNode = cur[cur.length - 1];
-    if (lastNode === end) {
+    if (compareIgnoringCase(lastNode, end)) {
       return cur;
     } else {
       var neighbors = await getNeighbors(lastNode);
@@ -334,4 +406,4 @@ async function sanityCheck() {
   console.log("Final Score: " + score + "/21");
 }
 
-//sanityCheck() //Uncomment this line to run the sanity check when you first open index.html
+// sanityCheck(); //Uncomment this line to run the sanity check when you first open index.html
